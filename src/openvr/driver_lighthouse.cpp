@@ -280,6 +280,15 @@ bool StockHmdUnwanted(std::string* why) {
     if (why) *why = "WiVRn streams its own headset";
     return true;
   }
+  if (!(force && *force == '1') && VRSettings()) {
+    EVRSettingsError e = VRSettingsError_None;
+    char forced[256]{};
+    VRSettings()->GetString(k_pch_SteamVR_Section, k_pch_SteamVR_ForcedDriverKey_String, forced, sizeof forced, &e);
+    if (e == VRSettingsError_None && *forced && !EqualsNoCase(forced, "lighthouse") && !EqualsNoCase(forced, "openhouse")) {
+      if (why) *why = std::string("SteamVR forcedDriver is ") + forced;
+      return true;
+    }
+  }
   return false;
 }
 

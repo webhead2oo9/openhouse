@@ -122,8 +122,18 @@ install(TARGETS lh_tracking EXPORT lighthouseTargets ARCHIVE DESTINATION ${CMAKE
 # ---- replaceable USB transport ------------------------------------------------
 if(LH_BUILD_USB)
   if(WIN32)
-    find_package(hidapi CONFIG REQUIRED)
-    set(LH_HIDAPI_TARGET hidapi::hidapi)
+    # Copy hidapi.h into generated/hidapi/ rather than adding third_party/hidapi to -I:
+    # third_party/hidapi/VERSION collides with C++20's <version> on case-insensitive filesystems.
+    configure_file(third_party/hidapi/hidapi/hidapi.h ${CMAKE_CURRENT_BINARY_DIR}/generated/hidapi/hidapi.h COPYONLY)
+    enable_language(C)
+    add_library(lh_hidapi STATIC third_party/hidapi/windows/hid.c)
+    set_target_properties(lh_hidapi PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    # Static library: suppress __declspec(dllexport) so MinGW ld still auto-exports lh::* from
+    # liblh.dll; driver_lighthouse.def explicitly exports the hid_* entry points on the driver DLL.
+    target_compile_definitions(lh_hidapi PUBLIC HID_API_NO_EXPORT_DEFINE)
+    target_include_directories(lh_hidapi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/hidapi/hidapi)
+    install(TARGETS lh_hidapi EXPORT lighthouseTargets ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    set(LH_HIDAPI_TARGET lh_hidapi)
   elseif(APPLE)
     find_package(hidapi CONFIG REQUIRED)
     set(LH_HIDAPI_TARGET hidapi::hidapi)
