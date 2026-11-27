@@ -258,18 +258,53 @@ std::vector<std::string> RunningRuntimes() {
 }
 
 bool CloseRuntimes() {
-  for (const auto& [pid, name] : Hosts()) {
 #ifdef _WIN32
+  // Ask Steam ("steam.exe -shutdown", which works when minimized to tray) and top-level windows
+  // (vrmonitor, overlays) to close cleanly first so open HID handles run Cleanup() instead of
+  // aborting in-flight USB transfers with TerminateProcess.
+  const auto initial = Hosts();
+  std::vector<DWORD> pids;
+  bool askedSteam = false;
+  for (const auto& [pid, name] : initial) {
+    pids.push_back(pid);
+    if (!askedSteam && _stricmp(name.c_str(), "steam.exe") == 0) {
+      if (HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)) {
+        wchar_t exe[MAX_PATH * 2]{};
+        DWORD len = DWORD(std::size(exe));
+        if (QueryFullProcessImageNameW(h, 0, exe, &len) && len > 0) {
+          std::wstring cmd = std::wstring(L"\"") + exe + L"\" -shutdown";
+          STARTUPINFOW si{};
+          si.cb = sizeof si;
+          PROCESS_INFORMATION pi{};
+          if (CreateProcessW(exe, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            askedSteam = true;
+          }
+        }
+        CloseHandle(h);
+      }
+    }
+  }
+  EnumWindows([](HWND hwnd, LPARAM lparam) -> BOOL {
+    const auto* targets = reinterpret_cast<const std::vector<DWORD>*>(lparam);
+    DWORD wpid = 0;
+    GetWindowThreadProcessId(hwnd, &wpid);
+    if (std::find(targets->begin(), targets->end(), wpid) != targets->end())
+      PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    return TRUE;
+  }, reinterpret_cast<LPARAM>(&pids));
+  for (int i = 0; i < 40 && !Hosts().empty(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  for (const auto& [pid, name] : Hosts()) {
     if (HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, pid)) {
       TerminateProcess(h, 0);
       CloseHandle(h);
     }
-#else
-    kill(pid, SIGTERM);
-#endif
   }
+  for (int i = 0; i < 15 && !Hosts().empty(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+#else
+  for (const auto& [pid, name] : Hosts()) kill(pid, SIGTERM);
   for (int i = 0; i < 50 && !Hosts().empty(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(200));
-#ifndef _WIN32
   for (const auto& [pid, name] : Hosts()) kill(pid, SIGKILL);
   for (int i = 0; i < 10 && !Hosts().empty(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(200));
 #endif
