@@ -1057,3 +1057,33 @@ TEST_F(Doorman, AWedgedWatchmanDongleDoesNotHoldUpStopping) {
   std::lock_guard lock(fake::m);
   EXPECT_EQ(fake::featureHanging, 0);
 }
+
+// A wedged Watchman dongle whose hid_open_path itself blocks must not serialize or hold up
+// opening healthy receivers (hidapi's global error string is thread-local, with no openMutex).
+TEST_F(Doorman, AHungWatchmanOpenDoesNotBlockHealthyReceivers) {
+#ifdef _WIN32
+  GTEST_SKIP() << "Windows lists Valve devices with SetupDi (hid_list.cpp), not through the fake hidapi";
+#endif
+  fake::plugged.push_back({"WHUNG0", L"WHUNGDONGLE", 0, 0, 0x28de, 0x2101});
+  fake::plugged.push_back({"WOK0", L"WOKDONGLE", 0, 0, 0x28de, 0x2102});
+  fake::Hang("WHUNG");
+  std::atomic<bool> openedWhileHung{false};
+  std::thread observer([&] {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (std::chrono::steady_clock::now() < deadline) {
+      bool ok = false;
+      {
+        std::lock_guard lock(fake::m);
+        ok = fake::hanging == 1 && std::any_of(fake::handles.begin(), fake::handles.end(),
+                                               [](const auto& h) { return h->path == "WOK0"; });
+      }
+      if (ok) { openedWhileHung = true; break; }
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  });
+  ASSERT_TRUE(transport->Start());
+  observer.join();
+  EXPECT_TRUE(openedWhileHung) << "WOK0 did not open while WHUNG0 was still blocked in hid_open_path";
+  fake::Release();
+  transport->Stop();
+}

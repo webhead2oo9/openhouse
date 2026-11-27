@@ -40,7 +40,9 @@ Use a dedicated vcpkg root: its installed dependency set is managed by the manif
 
 The vcpkg manifest pins baseline `a5f736224e85b32e25a8ffc52562333180396642`:
 Ceres 2.2 (Schur specialization, no SuiteSparse/LAPACK dependency), Eigen 5.0.1,
-hidapi, zlib, nlohmann-json; optional GLFW and GTest. Our solvers use dense Ceres
+zlib, nlohmann-json; optional GLFW and GTest (hidapi is vendored under
+`third_party/hidapi/windows` with lazy string descriptor reads and thread-local
+global error storage). Our solvers use dense Ceres
 solvers, so the omitted sparse backends are not required. vcpkg app-local DLL
 copying is disabled because this is a static-dependency cross-build.
 

@@ -39,6 +39,7 @@ licenses = out / 'licenses'
 licenses.mkdir(exist_ok=True)
 for copyright in (prefix / 'share').glob('*/copyright'):
     shutil.copy2(copyright, licenses / (copyright.parent.name + '.txt'))
+shutil.copy2(repo / 'third_party/hidapi/LICENSE-bsd.txt', licenses / 'hidapi.txt')
 shutil.copy2(repo / 'third_party/imgui/LICENSE.txt', licenses / 'imgui.txt')
 for notice in (repo / 'third_party/lighthouse-ble').glob('*.txt'):
     shutil.copy2(notice, licenses / ('lighthouse-ble-' + notice.name))
