@@ -85,7 +85,7 @@ static struct hid_api_version api_version = {
 	.patch = HID_API_VERSION_PATCH
 };
 
-static wchar_t *last_global_error_str = NULL;
+static __thread wchar_t *last_global_error_str = NULL;
 
 
 static hid_device *new_hid_device(void)

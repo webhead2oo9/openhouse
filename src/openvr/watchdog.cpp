@@ -4,14 +4,15 @@
 // "autoLaunchSteamVROnButtonPress" ("Start SteamVR when a headset or controller is turned
 // on" in Steam's settings).
 //
-// What wakes it, polled once a second:
-// - a receiver (dongle, 28de:2101/2102) that had no device gets one: a controller or tracker
-//   was turned on;
+// What wakes it:
+// - a receiver (dongle, 28de:2101/2102) that had no wireless traffic starts receiving input
+//   reports (0x23/0x24): a controller or tracker was turned on. Detected passively via Interrupt
+//   IN reads, as stock's CWatchdogDriver_Lighthouse does, without polling EP0 feature report ff 83;
 // - a wired device (28de:2000/2012/2022/2300) is plugged in, unless SteamVR knows it as a
 //   controller or tracker (WiredPlugInWakes): those show up on a charging cable while off.
 //   A Vive tracker and the Bigscreen Beyond are both 28de:2300, so it goes by the serial.
-// Devices already there when the watchdog starts don't wake it: SteamVR was just closed with
-// them, or Steam is starting.
+// Devices already there (or already streaming within 0.5 s of opening) when the watchdog starts
+// don't wake it: SteamVR was just closed with them, or Steam is starting.
 #include "watchdog.hpp"
 
 #include "../platform/platform.hpp"
@@ -69,12 +70,13 @@ class Watchdog final : public IVRWatchdogProvider {
  private:
   struct Receiver {
     hid_device* dev = nullptr;
+    std::chrono::steady_clock::time_point openedAt{};
+    std::chrono::steady_clock::time_point lastData{};
     bool connected = false;
   };
 
-  // While SteamVR runs, its driver has the dongles: none of them is asked anything from here (two
-  // processes' device-info requests at once wedge a dongle), and the handles are let go. Steam
-  // keeps the watchdog loaded through SteamVR sessions, without Cleanup().
+  // While SteamVR runs, its driver has the dongles: handles here are closed as soon as vrserver is
+  // seen. Steam keeps the watchdog loaded through SteamVR sessions without calling Cleanup().
   void LetGo() {
     for (auto& [path, r] : receivers_)
       if (r.dev) hid_close(r.dev);
@@ -84,26 +86,39 @@ class Watchdog final : public IVRWatchdogProvider {
 
   void Main() {
     bool first = true;
+    int ticksUntilScan = 0;
+    int ticksUntilProcCheck = 0;
+    bool vrserver = false;
     while (!stop_) {
-      bool polled = false;
-      if (!lh::platform::VrserverRunning()) {
-        lh::platform::DongleQueryLock lock;   // the driver starting in vrserver waits for it
-        if (lock.Acquire(std::chrono::milliseconds(0)) && !lh::platform::VrserverRunning()) {
-          Poll(first);
-          polled = true;
-        }
-      }
-      if (polled) {
-        first = false;
+      if (ticksUntilProcCheck <= 0) {
+        vrserver = lh::platform::VrserverRunning();
+        ticksUntilProcCheck = 5;  // check process list twice a second, not 20-30x/s
       } else {
+        --ticksUntilProcCheck;
+      }
+      if (vrserver) {
         LetGo();
         first = true;   // what's there once SteamVR closes was there with it: not a wake-up
+        ticksUntilScan = 0;
+      } else {
+        if (ticksUntilScan <= 0) {
+          lh::platform::DongleQueryLock lock;
+          if (lock.Acquire(std::chrono::milliseconds(0))) {
+            Scan(first);
+            first = false;
+            ticksUntilScan = 10;  // re-list HID paths once a second
+          }
+        } else {
+          --ticksUntilScan;
+        }
+        ReadReceivers();
       }
-      for (int i = 0; i < 10 && !stop_; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
   }
 
-  void Poll(bool first) {
+  void Scan(bool first) {
+    const auto now = std::chrono::steady_clock::now();
     std::set<std::string> seenReceivers, seenWired;
     for (const lh::usb::HidEntry& entry : lh::usb::ListHid(kValve)) {
       const lh::usb::HidEntry* d = &entry;
@@ -114,8 +129,8 @@ class Watchdog final : public IVRWatchdogProvider {
           Receiver r;
           r.dev = hid_open_path(path.c_str());
           if (!r.dev) continue;
-          // A receiver plugged in after start counts from its first answer, as one at start.
-          if (const auto s = lh::usb::UsbTransport::ConnectedSerial(r.dev)) r.connected = *s != 0;
+          hid_set_nonblocking(r.dev, 1);
+          r.openedAt = now;
           receivers_[path] = r;
         }
       } else if (IsWired(d->pid) && d->iface == 0) {
@@ -139,12 +154,40 @@ class Watchdog final : public IVRWatchdogProvider {
         it = receivers_.erase(it);
         continue;
       }
-      const auto serial = lh::usb::UsbTransport::ConnectedSerial(it->second.dev);
-      if (serial) {
-        const bool connected = *serial != 0;
-        if (connected && !it->second.connected) Wake(TrackedDeviceClass_Controller);
-        it->second.connected = connected;
+      ++it;
+    }
+  }
+
+  void ReadReceivers() {
+    const auto now = std::chrono::steady_clock::now();
+    unsigned char buf[64];
+    for (auto it = receivers_.begin(); it != receivers_.end();) {
+      Receiver& r = it->second;
+      bool failed = false;
+      for (int k = 0; k < 16; ++k) {
+        const int n = hid_read(r.dev, buf, sizeof buf);
+        if (n < 0) { failed = true; break; }
+        if (n == 0) break;
+        if (buf[0] == 0x26) {
+          r.connected = false;
+        } else {
+          r.lastData = now;
+          if (!r.connected) {
+            r.connected = true;
+            // A device already transmitting when the receiver was opened (Steam starting, SteamVR
+            // just closed with powerOffOnExit=false, or dongle plugged in with device on) doesn't wake.
+            if (now - r.openedAt >= std::chrono::milliseconds(500)) Wake(TrackedDeviceClass_Controller);
+          }
+        }
       }
+      if (failed) {
+        hid_close(r.dev);
+        it = receivers_.erase(it);
+        continue;
+      }
+      // Require a long silence (15 s) before assuming power-off without a 0x26 disconnect report,
+      // so brief radio dropouts on a device left on after SteamVR exits don't relaunch SteamVR.
+      if (r.connected && now - r.lastData > std::chrono::seconds(15)) r.connected = false;
       ++it;
     }
   }

@@ -2,6 +2,7 @@
 
 #include "device_abi.hpp"
 #include "pairing_mailbox.hpp"
+#include "../transport/usb/hid_list.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -188,7 +189,8 @@ unsigned HexAfter(const std::string& path, const char* key) {
   return at == std::string::npos ? 0 : unsigned(std::strtoul(path.c_str() + at + std::strlen(key), nullptr, 16));
 }
 
-// The device's USB serial ("LHR-0053AF37"), opened without access rights.
+// The device's USB serial ("LHR-0053AF37"), opened without access rights. Only called for
+// wired 28de:2300 devices (never 2101/2102 dongles).
 std::string SerialOf(const char* path) {
   HANDLE h = CreateFileA(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
   if (h == INVALID_HANDLE_VALUE) return {};
@@ -278,6 +280,34 @@ void* HookImport(HMODULE module, const char* dll, const char* name, void* hook) 
 // goes through our exports and whatever hooks them. hid_device handles then are ours on
 // both sides. All or none: a mix would pass one hidapi's handle to the other.
 hid_device_info* StockEnumerate(unsigned short vid, unsigned short pid) {
+  if (!std::getenv("LH_STOCK_ALL_DEVICES")) {
+    if (vid == 0x28de && (pid == 0x2101 || pid == 0x2102)) return nullptr;
+    // When scanning Valve devices without a specific PID, never let hid_enumerate open
+    // 28de:2101/2102 dongles for string descriptors: wedged dongles hang hid_enumerate for
+    // 5-15 s each, and healthy ones get concurrent EP0 control traffic alongside our own transport.
+    if (vid == 0x28de && pid == 0) {
+      std::set<uint16_t> pids;
+      for (const auto& e : lh::usb::ListHid(0x28de))
+        if (e.pid != 0x2101 && e.pid != 0x2102) pids.insert(e.pid);
+      hid_device_info* head = nullptr;
+      hid_device_info** tail = &head;
+      for (uint16_t allowedPid : pids) {
+        for (hid_device_info* sub = hid_enumerate(0x28de, allowedPid); sub;) {
+          hid_device_info* next = sub->next;
+          sub->next = nullptr;
+          if (!sub->path || StockMayUse(sub->path)) {
+            *tail = sub;
+            tail = &sub->next;
+          } else {
+            LogHidden(sub->path);
+            hid_free_enumeration(sub);
+          }
+          sub = next;
+        }
+      }
+      return head;
+    }
+  }
   hid_device_info* list = hid_enumerate(vid, pid);
   if (std::getenv("LH_STOCK_ALL_DEVICES")) return list;
   hid_device_info* hidden = nullptr;
@@ -740,24 +770,24 @@ StockHmd::Presence StockHmd::HeadsetPresent(std::string* which, std::vector<std:
     AllowHeadset("*");  // headset unknown: any wired 0x2300 may be it
     return Presence::Yes;
   }
-  hid_device_info* list = hid_enumerate(0x28de, 0);
+  // ListHid reads paths and USB instance IDs without device I/O: hid_enumerate here ran on
+  // SteamVR's load_drivers thread and hung past SteamVR's 21 s watchdog whenever a Watchman
+  // dongle on the bus wasn't answering string descriptor reads.
   Presence result = Presence::No;
-  for (auto* d = list; d; d = d->next) {
-    const std::wstring product = d->product_string ? d->product_string : L"";
+  for (const auto& d : lh::usb::ListHid(0x28de)) {
     Presence p = Presence::No;
-    if (d->product_id == 0x2000) p = Presence::Yes;
-    else if (d->product_id == 0x2300 && product.find(L"Controller") == std::wstring::npos) p = Presence::Maybe;
+    if (d.pid == 0x2000) p = Presence::Yes;
+    else if (d.pid == 0x2300) p = Presence::Maybe;
     if (p == Presence::No) continue;
+    const std::string serial = Narrow(d.serial.c_str());
     char id[16];
-    std::snprintf(id, sizeof id, "28de:%04x ", d->product_id);
-    if (p > result && which) *which = id + Narrow(product.c_str());
+    std::snprintf(id, sizeof id, "28de:%04x", d.pid);
+    if (p > result && which) *which = std::string(id) + (serial.empty() ? "" : " " + serial);
     result = std::max(result, p);
-    if (p == Presence::Maybe && maybe && d->serial_number) {
-      const std::string serial = Narrow(d->serial_number);
+    if (p == Presence::Maybe && maybe && !serial.empty()) {
       if (std::find(maybe->begin(), maybe->end(), serial) == maybe->end()) maybe->push_back(serial);
     }
   }
-  hid_free_enumeration(list);
   return result;
 }
 

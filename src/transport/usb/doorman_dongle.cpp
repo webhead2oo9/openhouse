@@ -130,15 +130,18 @@ DoormanDongle::DoormanDongle(std::string serial, IInputSink* sink, ReportDecoder
 DoormanDongle::~DoormanDongle() { Close(); }
 
 namespace {
-// One dongle open at a time, as when the reader thread opened them: hid_open_path resets and sets
-// hidapi's process-wide error string.
+#ifdef __APPLE__
+// External macOS hidapi shares a process-wide error string across hid_open_path calls.
 std::mutex g_openMutex;
+#endif
 
 // Every interface of a dongle, or none (a slot on a missing interface would never be heard); with
 // writeHandle, a second handle on interface 0 for the writer thread too.
 void OpenInterfaces(const std::array<std::string, kDoormanInterfaces>& paths,
                     std::array<hid_device_*, kDoormanInterfaces>* devs, hid_device_** writeDev, bool writeHandle) {
+#ifdef __APPLE__
   std::lock_guard lock(g_openMutex);
+#endif
   for (size_t i = 0; i < paths.size() && !paths[i].empty(); ++i) {
     (*devs)[i] = hid_open_path(paths[i].c_str());
     if (!(*devs)[i]) {

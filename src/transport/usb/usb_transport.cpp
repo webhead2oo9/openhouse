@@ -200,12 +200,14 @@ std::optional<uint32_t> UsbTransport::ConnectedSerial(hid_device_* receiver) {
 // the receiver doesn't answer). Runs on the probe thread, on a second handle to the receiver: the
 // reader thread's handle stays its own. 1: another device, 0: the same one, -1: no answer.
 int UsbTransport::OtherDeviceConnected(const std::string& path, const std::string& serial, const std::string& receiver) {
-  hid_device* h = nullptr;
-  {
-    static std::mutex openMutex;  // hid_open_path's error string is process-wide
-    std::lock_guard openLock(openMutex);
-    h = hid_open_path(path.c_str());
-  }
+#ifdef __APPLE__
+  static std::mutex openMutex;  // external macOS hidapi shares its global error string
+  std::unique_lock openLock(openMutex);
+#endif
+  hid_device* h = hid_open_path(path.c_str());
+#ifdef __APPLE__
+  openLock.unlock();
+#endif
   if (!h) return -1;
   DeviceInfo di;
   const bool ok = QueryDeviceInfo(h, &di, 2) && di.serial != 0;
@@ -272,14 +274,17 @@ bool UsbTransport::RequestProtocolVersion(hid_device_* dev, int version) {
 
 UsbTransport::OpenResult UsbTransport::OpenEndpoint(const HidEntry& entry, Open* out) {
   const HidEntry* d = &entry;
-  // One open at a time: hidapi's hid_open_path resets and sets a process-wide error string,
-  // which parallel opens would free twice. The config read after it stays parallel.
+  // Parallel opens on Windows/Linux (vendored hidapi uses thread-local global error storage, so a
+  // wedged device blocking in the OS never holds up healthy endpoints). External macOS hidapi
+  // still shares a global error pointer and needs serialization.
+#ifdef __APPLE__
   static std::mutex openMutex;
-  hid_device* h = nullptr;
-  {
-    std::lock_guard openLock(openMutex);
-    h = hid_open_path(d->path.c_str());
-  }
+  std::unique_lock openLock(openMutex);
+#endif
+  hid_device* h = hid_open_path(d->path.c_str());
+#ifdef __APPLE__
+  openLock.unlock();
+#endif
   if (!h) {
     std::lock_guard lock(pathsMutex_);
     if (failedPaths_.insert(d->path).second) Log(LogLevel::Warn, "cannot open %s\n", d->path.c_str());
