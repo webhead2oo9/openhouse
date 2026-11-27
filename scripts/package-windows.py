@@ -21,7 +21,7 @@ files = {build / 'openvr/lighthouse/bin/win64/driver_lighthouse.dll': out / 'dri
 files.update({build / name: out / 'apps' / name for name in ['lhtool.exe', 'lhcapture.exe', 'lhviz.exe', 'lhsession.exe', 'openhouse-viewer.exe', 'openhouse-overlay.exe', 'doorman-dongle-manager.exe']})
 system = {'advapi32.dll', 'winhttp.dll', 'kernel32.dll', 'shlwapi.dll', 'user32.dll', 'gdi32.dll',
           'shell32.dll', 'winmm.dll', 'ole32.dll', 'comdlg32.dll', 'msvcrt.dll',
-          'ucrtbase.dll', 'ntdll.dll', 'imm32.dll', 'version.dll', 'oleaut32.dll', 'setupapi.dll', 'opengl32.dll', 'hid.dll', 'ws2_32.dll'}
+          'ucrtbase.dll', 'ntdll.dll', 'imm32.dll', 'version.dll', 'oleaut32.dll', 'setupapi.dll', 'cfgmgr32.dll', 'opengl32.dll', 'hid.dll', 'ws2_32.dll'}
 artifacts = []
 for source, target in files.items():
     if not source.is_file():
@@ -39,6 +39,7 @@ licenses = out / 'licenses'
 licenses.mkdir(exist_ok=True)
 for copyright in (prefix / 'share').glob('*/copyright'):
     shutil.copy2(copyright, licenses / (copyright.parent.name + '.txt'))
+shutil.copy2(repo / 'third_party/hidapi/LICENSE-bsd.txt', licenses / 'hidapi.txt')
 shutil.copy2(repo / 'third_party/imgui/LICENSE.txt', licenses / 'imgui.txt')
 for notice in (repo / 'third_party/lighthouse-ble').glob('*.txt'):
     shutil.copy2(notice, licenses / ('lighthouse-ble-' + notice.name))

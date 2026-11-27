@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+using lh::usb::IsUsbDeviceInstanceId;
 using lh::usb::ParseHidPath;
 using lh::usb::SerialFromInstanceId;
 
@@ -14,6 +15,15 @@ TEST(HidList, ParsesVendorProductAndInterfaceFromWindowsPaths) {
   EXPECT_EQ(vid, 0x28de);
   EXPECT_EQ(pid, 0x2101);
   EXPECT_EQ(iface, 0);
+  // Single-interface Watchman dongle: no "&mi_" in the HID path; ListHid promotes iface -1 -> 0
+  // when its parent DevInst is a whole USB device node.
+  ASSERT_TRUE(ParseHidPath(R"(\\?\hid#vid_28de&pid_2101#8&2c6e7e1c&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030})", &vid, &pid, &iface));
+  EXPECT_EQ(vid, 0x28de);
+  EXPECT_EQ(pid, 0x2101);
+  EXPECT_EQ(iface, -1);
+  EXPECT_TRUE(IsUsbDeviceInstanceId(L"USB\\VID_28DE&PID_2101\\7B001B0FB0"));
+  EXPECT_FALSE(IsUsbDeviceInstanceId(L"USB\\VID_28DE&PID_2300&MI_00\\7&3A4B5C6D&0&0000"));
+  EXPECT_FALSE(IsUsbDeviceInstanceId(L"BTHLEDevice\\{00001812-0000-1000-8000-00805f9b34fb}\\1"));
   // Upper case, a later interface, and a collection suffix.
   ASSERT_TRUE(ParseHidPath(R"(\\?\HID#VID_28DE&PID_2300&MI_02&Col01#9&1a&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030})", &vid, &pid, &iface));
   EXPECT_EQ(pid, 0x2300);

@@ -13,7 +13,7 @@ namespace lh::usb {
 struct HidEntry {
   std::string path;     // as hid_open_path takes it
   uint16_t vid = 0, pid = 0;
-  int iface = -1;       // USB interface number, -1 when the path has none
+  int iface = -1;       // USB interface number (0 for single-interface USB HID), -1 when non-USB without mi_
   std::wstring serial;  // the USB serial number, empty when unknown
 };
 
@@ -27,5 +27,7 @@ bool ParseHidPath(const std::string& path, uint16_t* vid, uint16_t* pid, int* if
 // a per-interface ID ("...&MI_00\...") or one Windows made up ("6&2f1a3b4c&0&2", a device
 // without a serial number).
 std::wstring SerialFromInstanceId(const std::wstring& id);
+// Whether a Windows device instance ID names a whole USB device ("USB\...", without "&MI_").
+bool IsUsbDeviceInstanceId(const std::wstring& id);
 
 }  // namespace lh::usb

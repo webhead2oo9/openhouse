@@ -15,8 +15,10 @@
 #endif
 #include <windows.h>
 #include <cfgmgr32.h>
-#include <hidsdi.h>
 #include <setupapi.h>
+extern "C" {
+#include <hidsdi.h>
+}
 #endif
 
 namespace lh::usb {
@@ -47,10 +49,14 @@ bool ParseHidPath(const std::string& path, uint16_t* vid, uint16_t* pid, int* if
   return true;
 }
 
-std::wstring SerialFromInstanceId(const std::wstring& id) {
+bool IsUsbDeviceInstanceId(const std::wstring& id) {
   std::wstring upper = id;
   for (wchar_t& c : upper) c = static_cast<wchar_t>(std::towupper(c));
-  if (upper.rfind(L"USB\\", 0) != 0 || upper.find(L"&MI_") != std::wstring::npos) return {};
+  return upper.rfind(L"USB\\", 0) == 0 && upper.find(L"&MI_") == std::wstring::npos;
+}
+
+std::wstring SerialFromInstanceId(const std::wstring& id) {
+  if (!IsUsbDeviceInstanceId(id)) return {};
   const size_t slash = id.rfind(L'\\');
   if (slash == std::wstring::npos || slash + 1 >= id.size()) return {};
   std::wstring serial = id.substr(slash + 1);
@@ -68,15 +74,20 @@ std::wstring InstanceId(DEVINST inst) {
 
 // The USB serial: the instance ID of the first ancestor that's a whole USB device (the HID
 // interface's parent is the USB interface on a composite device, and its parent the device).
-std::wstring UsbSerial(DEVINST inst) {
+// Also sets *usbDevice when a whole USB device ancestor was found: single-interface USB HID
+// devices (such as external Watchman dongles, 28de:2101) have no "&mi_" in their HID path and
+// sit on interface 0, as hidapi reports them.
+std::wstring UsbSerial(DEVINST inst, bool* usbDevice) {
+  if (usbDevice) *usbDevice = false;
   for (int depth = 0; depth < 4; ++depth) {
     DEVINST parent = 0;
     if (CM_Get_Parent(&parent, inst, 0) != CR_SUCCESS) return {};
     inst = parent;
     const std::wstring id = InstanceId(inst);
-    std::wstring upper = id;
-    for (wchar_t& c : upper) c = static_cast<wchar_t>(std::towupper(c));
-    if (upper.rfind(L"USB\\", 0) == 0 && upper.find(L"&MI_") == std::wstring::npos) return SerialFromInstanceId(id);
+    if (IsUsbDeviceInstanceId(id)) {
+      if (usbDevice) *usbDevice = true;
+      return SerialFromInstanceId(id);
+    }
   }
   return {};
 }
@@ -112,7 +123,9 @@ std::vector<HidEntry> ListHid(uint16_t vid) {
     e.path = Narrow(detail->DevicePath);
     if (!ParseHidPath(e.path, &e.vid, &e.pid, &e.iface)) continue;
     if (vid != 0 && e.vid != vid) continue;
-    e.serial = UsbSerial(dev.DevInst);
+    bool usbDevice = false;
+    e.serial = UsbSerial(dev.DevInst, &usbDevice);
+    if (e.iface < 0 && usbDevice) e.iface = 0;
     out.push_back(std::move(e));
   }
   SetupDiDestroyDeviceInfoList(set);
